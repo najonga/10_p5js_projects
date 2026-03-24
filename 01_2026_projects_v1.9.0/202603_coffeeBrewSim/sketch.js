@@ -144,6 +144,7 @@ class BrewSimulation {
     this.currentFlow = 0;
     this.currentTDS = 0;
     this.extractionMass = 0;
+    this.frameExtraction = 0;
     this.optimalTime = 25;
     this.overExtractRate = 0.02;
     this.resetNeeded = false;
@@ -183,13 +184,13 @@ class BrewSimulation {
     };
   }
 
-  get bedTopDown() {
+  get bedRect() {
     const bounds = this.brewBounds;
     return {
-      cx: bounds.x + bounds.w * 0.5,
-      cy: bounds.y + bounds.h * 0.56,
-      rx: bounds.w * 0.29,
-      ry: bounds.h * 0.26
+      x: bounds.x + bounds.w * 0.18,
+      y: bounds.y + bounds.h * 0.26,
+      w: bounds.w * 0.64,
+      h: bounds.h * 0.56
     };
   }
 
@@ -209,18 +210,14 @@ class BrewSimulation {
   initParticles() {
     this.coffeeParticles.length = 0;
     this.waterParticles.length = 0;
-    const bounds = this.brewBounds;
-    for (let i = 0; i < this.maxCoffee; i += 1) {
-      this.coffeeParticles.push(this.createCoffeeParticle(bounds));
-    }
+    this.generateCoffeeBed();
     for (let i = 0; i < this.maxWater * 0.55; i += 1) {
       this.waterParticles.push(this.createWaterParticle());
     }
   }
 
-  createCoffeeParticle(bounds) {
+  sampleCoffeeSpecs() {
     const params = this.params;
-    const bed = this.bedTopDown;
     const mean = params.meanGrind;
     const uniformity = params.uniformity;
     const finesRatio = params.finesRatio;
@@ -233,18 +230,51 @@ class BrewSimulation {
       size = randomGaussian(mean, sd);
     }
     size = constrain(size, 3.2, 26);
-    const angle = random(TAU);
-    const radial = sqrt(random());
-    const x = bed.cx + cos(angle) * bed.rx * radial;
-    const y = bed.cy + sin(angle) * bed.ry * radial;
-    return new CoffeeParticle(x, y, size, isFine);
+    return { size, isFine };
+  }
+
+  generateCoffeeBed() {
+    const bed = this.bedRect;
+    const placed = [];
+    const maxAttempts = this.maxCoffee * 18;
+    let attempts = 0;
+
+    while (placed.length < this.maxCoffee && attempts < maxAttempts) {
+      attempts += 1;
+      const specs = this.sampleCoffeeSpecs();
+      const r = specs.size * 0.5;
+      const x = random(bed.x + r + 6, bed.x + bed.w - r - 6);
+      const yBias = pow(random(), 0.58);
+      const y = lerp(bed.y + r + 6, bed.y + bed.h - r - 6, yBias);
+      let blocked = false;
+      for (const other of placed) {
+        if (dist(x, y, other.pos.x, other.pos.y) < r + other.radius + 1.5) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) {
+        placed.push(new CoffeeParticle(x, y, specs.size, specs.isFine));
+      }
+    }
+
+    while (placed.length < this.maxCoffee) {
+      const specs = this.sampleCoffeeSpecs();
+      const r = specs.size * 0.5;
+      const x = random(bed.x + r + 6, bed.x + bed.w - r - 6);
+      const y = random(bed.y + r + 6, bed.y + bed.h - r - 6);
+      placed.push(new CoffeeParticle(x, y, specs.size, specs.isFine));
+    }
+
+    this.coffeeParticles = placed;
   }
 
   createWaterParticle() {
     const params = this.params;
-    const bounds = this.brewBounds;
-    const x = random(bounds.x + bounds.w * 0.38, bounds.x + bounds.w * 0.62);
-    const y = bounds.y - random(10, 80);
+    const bed = this.bedRect;
+    const showerW = bed.w * 0.72;
+    const x = random(bed.x + bed.w * 0.5 - showerW * 0.5, bed.x + bed.w * 0.5 + showerW * 0.5);
+    const y = bed.y - random(22, 86);
     return new WaterParticle(x, y, params.waterTemp);
   }
 
@@ -256,11 +286,13 @@ class BrewSimulation {
       this.elapsed = 0;
       this.extractionMass = 0;
       this.currentTDS = 0;
+      this.frameExtraction = 0;
       this.collisionHistory.length = 0;
       this.resetNeeded = false;
     }
 
     this.collisionCountFrame = 0;
+    this.frameExtraction = 0;
     this.spawnWater(dt);
     this.updateWater(dt);
     this.updateCoffee(dt);
@@ -282,44 +314,53 @@ class BrewSimulation {
   updateWater(dt) {
     const params = this.params;
     const bounds = this.brewBounds;
+    const bed = this.bedRect;
     const gravity = createVector(0, 14 * params.pourForce);
-    const tempAmp = map(params.waterTemp, 70, 100, 0.06, 0.42);
-    const swirl = params.turbulence * 0.12;
+    const tempAmp = map(params.waterTemp, 70, 100, 0.09, 0.5);
+    const swirl = params.turbulence * 0.18;
 
     for (const water of this.waterParticles) {
       water.temperature = params.waterTemp;
       water.applyForce(p5.Vector.mult(gravity, water.mass));
 
-      const noiseAngle = noise(water.seed, frameCount * 0.014, water.pos.y * 0.004) * TAU * 2.0;
+      const noiseAngle = noise(water.seed, frameCount * 0.018, water.pos.y * 0.005) * TAU * 2.4;
       const jitter = p5.Vector.fromAngle(noiseAngle).mult(tempAmp + swirl);
       water.applyForce(jitter);
 
-      const centerPull = createVector(bounds.x + bounds.w * 0.5 - water.pos.x, bounds.y + bounds.h * 0.45 - water.pos.y);
-      centerPull.mult(0.0014 + params.pourForce * 0.0009);
-      water.applyForce(centerPull);
+      const lateral = sin(frameCount * 0.035 + water.seed * 6.0) * (0.012 + params.turbulence * 0.028);
+      water.applyForce(createVector(lateral, 0));
+
+      if (water.pos.y > bed.y && water.pos.y < bed.y + bed.h) {
+        water.vel.mult(0.988);
+        water.applyForce(createVector(0, 0.08));
+      }
 
       water.update(dt);
-      water.wrap(bounds);
+      water.keepInsideColumn(bounds, bed);
     }
   }
 
   updateCoffee(dt) {
-    const bed = this.bedTopDown;
+    const bed = this.bedRect;
     const params = this.params;
-    const threshold = 2.8 + params.turbulence * 1.1 + params.pourForce * 0.9;
+    const threshold = 2.7 + params.turbulence * 1.2 + params.pourForce * 1.0;
 
     for (const coffee of this.coffeeParticles) {
-      const damping = p5.Vector.mult(coffee.vel, -0.11);
+      const damping = p5.Vector.mult(coffee.vel, -0.15);
       coffee.applyForce(damping);
+      coffee.applyForce(createVector(0, 0.04 * coffee.mass));
 
       const field = this.sampleWaterField(coffee.pos, 85);
-      coffee.applyForce(field.mult(coffee.isFine ? 0.95 : 0.55));
+      coffee.applyForce(field.mult(coffee.isFine ? 0.85 : 0.65));
 
       const localEnergy = this.sampleWaterEnergy(coffee.pos, 82);
-      coffee.updateDepth(localEnergy, threshold, dt);
+      if (localEnergy > threshold) {
+        const sortForce = coffee.isFine ? 0.085 : -0.07;
+        coffee.applyForce(createVector(0, sortForce * coffee.mass));
+      }
 
-      const toCenter = createVector(bed.cx - coffee.pos.x, bed.cy - coffee.pos.y).mult(0.0024);
-      coffee.applyForce(toCenter);
+      const toMidX = (bed.x + bed.w * 0.5 - coffee.pos.x) * 0.0018;
+      coffee.applyForce(createVector(toMidX, 0));
 
       coffee.update(dt);
       coffee.keepInsideBed(bed);
@@ -400,43 +441,80 @@ class BrewSimulation {
         const impulse = p5.Vector.mult(normal, impulseMag);
         a.vel.sub(p5.Vector.div(impulse, a.mass));
         b.vel.add(p5.Vector.div(impulse, b.mass));
+        a.keepInsideBed(this.bedRect);
+        b.keepInsideBed(this.bedRect);
       }
     }
+  }
+
+  resolvePair(a, b, restitution, friction) {
+    const delta = p5.Vector.sub(b.pos, a.pos);
+    const distSq = delta.magSq();
+    const minDist = a.radius + b.radius;
+    if (distSq === 0 || distSq >= minDist * minDist) {
+      return null;
+    }
+
+    const dist = sqrt(distSq);
+    const normal = delta.copy().div(dist);
+    const overlap = minDist - dist;
+    const totalInvMass = 1 / a.mass + 1 / b.mass;
+
+    a.pos.add(p5.Vector.mult(normal, -overlap * (1 / a.mass) / totalInvMass));
+    b.pos.add(p5.Vector.mult(normal, overlap * (1 / b.mass) / totalInvMass));
+
+    const rv = p5.Vector.sub(b.vel, a.vel);
+    const velAlongNormal = rv.dot(normal);
+    if (velAlongNormal > 0) {
+      return null;
+    }
+
+    const impulseMag = (-(1 + restitution) * velAlongNormal) / totalInvMass;
+    const impulse = p5.Vector.mult(normal, impulseMag);
+    a.vel.sub(p5.Vector.div(impulse, a.mass));
+    b.vel.add(p5.Vector.div(impulse, b.mass));
+
+    const tangent = p5.Vector.sub(rv, p5.Vector.mult(normal, velAlongNormal));
+    if (tangent.magSq() > 0.0001) {
+      tangent.normalize();
+      const jt = (-rv.dot(tangent) * friction) / totalInvMass;
+      const frictionImpulse = p5.Vector.mult(tangent, jt);
+      a.vel.sub(p5.Vector.div(frictionImpulse, a.mass));
+      b.vel.add(p5.Vector.div(frictionImpulse, b.mass));
+    }
+
+    return abs(velAlongNormal);
+  }
+
+  transferExtraction(water, coffee, impactSpeed) {
+    const available = coffee.solubleLeft;
+    const capacity = water.maxYield - water.extractLoad;
+    if (available <= 0 || capacity <= 0) {
+      return 0;
+    }
+    const transfer = min(available, capacity, 0.0035 + impactSpeed * 0.0022);
+    coffee.solubleLeft -= transfer;
+    water.extractLoad += transfer;
+    water.brewTint = lerp(water.brewTint, coffee.colorSeed, 0.34);
+    this.frameExtraction += transfer;
+    return transfer;
   }
 
   handleCollisions() {
     for (const water of this.waterParticles) {
       for (const coffee of this.coffeeParticles) {
-        const sumR = water.radius + coffee.radius;
-        const dx = coffee.pos.x - water.pos.x;
-        const dy = coffee.pos.y - water.pos.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > sumR * sumR || distSq === 0) {
+        const impact = this.resolvePair(water, coffee, 0.42, 0.12);
+        if (impact === null) {
           continue;
         }
-
-        const dist = sqrt(distSq);
-        const normal = createVector(dx / dist, dy / dist);
-        const overlap = sumR - dist;
-
-        water.pos.add(p5.Vector.mult(normal, -overlap * 0.42));
-        coffee.pos.add(p5.Vector.mult(normal, overlap * 0.58));
-
-        const relative = p5.Vector.sub(coffee.vel, water.vel);
-        const speed = relative.dot(normal);
-        if (speed > 0) {
-          continue;
-        }
-
-        const impulseMag = (-1.18 * speed) / (1 / water.mass + 1 / coffee.mass);
-        const impulse = p5.Vector.mult(normal, impulseMag);
-        water.vel.sub(p5.Vector.div(impulse, water.mass));
-        coffee.vel.add(p5.Vector.div(impulse, coffee.mass));
         coffee.lastHit = frameCount;
+        coffee.keepInsideBed(this.bedRect);
+        water.keepInsideColumn(this.brewBounds, this.bedRect);
+        this.transferExtraction(water, coffee, impact);
 
         this.collisionCountFrame += 1;
         if (frameCount - water.lastSoundFrame > 2) {
-          this.audio.trigger(coffee.radius, speed, this.currentFlow);
+          this.audio.trigger(coffee.radius, impact, this.currentFlow);
           water.lastSoundFrame = frameCount;
         }
       }
@@ -456,8 +534,8 @@ class BrewSimulation {
     const recent = this.collisionHistory.reduce((sum, n) => sum + n, 0);
     this.currentFlow = recent / max(1, this.collisionHistory.length);
 
-    const saturation = exp(-this.elapsed * 0.052);
-    this.extractionMass += this.collisionCountFrame * dt * 0.17 * saturation;
+    const saturation = exp(-this.elapsed * 0.05);
+    this.extractionMass += this.frameExtraction * 18 * saturation + this.collisionCountFrame * dt * 0.015;
 
     const over = max(0, this.elapsed - this.optimalTime);
     const penalty = pow(over, 1.32) * this.overExtractRate;
@@ -505,7 +583,7 @@ class BrewSimulation {
 
   renderMicroField() {
     const bounds = this.brewBounds;
-    const bed = this.bedTopDown;
+    const bed = this.bedRect;
     noFill();
     stroke(227, 196, 150, 40);
     rect(bounds.x, bounds.y, bounds.w, bounds.h, 26);
@@ -517,23 +595,23 @@ class BrewSimulation {
     }
 
     noStroke();
-    fill(68, 45, 29, 78);
-    ellipse(bed.cx, bed.cy, bed.rx * 2.16, bed.ry * 2.08);
-    fill(102, 66, 37, 34);
-    ellipse(bed.cx, bed.cy, bed.rx * 1.55, bed.ry * 1.48);
+    fill(24, 20, 18, 150);
+    rect(bed.x - 10, bed.y - 18, bed.w + 20, bed.h + 46, 18);
+    fill(78, 50, 28, 110);
+    rect(bed.x, bed.y, bed.w, bed.h, 12);
+    fill(255, 225, 180, 24);
+    rect(bed.x, bed.y - 12, bed.w, 12, 8);
 
     noStroke();
-    for (const coffee of this.coffeeParticles) {
-      coffee.render();
-    }
     for (const water of this.waterParticles) {
       water.render();
     }
+    for (const coffee of this.coffeeParticles) {
+      coffee.render();
+    }
 
-    const centerX = bounds.x + bounds.w * 0.5;
-    const wave = sin(frameCount * 0.05) * 18;
-    fill(255, 214, 173, 25);
-    ellipse(centerX + wave, bounds.y + 12, bounds.w * 0.14, 30);
+    fill(255, 214, 173, 28);
+    rect(bed.x + bed.w * 0.25, bed.y - 22, bed.w * 0.5, 10, 6);
   }
 
   renderSectionView() {
@@ -547,16 +625,17 @@ class BrewSimulation {
     vertex(cx - dripperTop, topY);
     vertex(cx - dripperBottom, bottomY);
     vertex(cx + dripperBottom, bottomY);
-    vertex(cx + dripperTop, topY);
+      vertex(cx + dripperTop, topY);
     endShape(CLOSE);
 
     const waterColumn = map(this.currentFlow, 0, 10, panelW * 0.025, panelW * 0.075, true);
     strokeWeight(1);
+    const sourceBed = this.bedRect;
     for (const water of this.waterParticles) {
-      const mappedY = map(constrain(water.pos.y, this.brewBounds.y, this.brewBounds.y + this.brewBounds.h), this.brewBounds.y, this.brewBounds.y + this.brewBounds.h, topY + 10, bottomY - 8);
-      const drift = map(water.pos.x, this.brewBounds.x, this.brewBounds.x + this.brewBounds.w, -dripperBottom * 0.85, dripperBottom * 0.85);
+      const mappedY = map(constrain(water.pos.y, sourceBed.y - 50, sourceBed.y + sourceBed.h), sourceBed.y - 50, sourceBed.y + sourceBed.h, topY + 12, bottomY - 8);
+      const drift = map(water.pos.x, sourceBed.x, sourceBed.x + sourceBed.w, -dripperBottom * 0.85, dripperBottom * 0.85);
       noStroke();
-      fill(131, 182, 214, 105);
+      fill(red(water.displayColor), green(water.displayColor), blue(water.displayColor), 115);
       ellipse(cx + drift * 0.45, mappedY, waterColumn, waterColumn * 1.3);
     }
 
@@ -569,15 +648,16 @@ class BrewSimulation {
     vertex(cx + dripperTop * 0.7, bedTop);
     endShape(CLOSE);
 
-    const bed = this.bedTopDown;
+    const bed = this.bedRect;
     const sampleStep = max(1, floor(this.coffeeParticles.length / 130));
     for (let i = 0; i < this.coffeeParticles.length; i += sampleStep) {
       const coffee = this.coffeeParticles[i];
-      const lateralNorm = constrain((coffee.pos.x - (bed.cx - bed.rx)) / (bed.rx * 2), 0, 1);
-      const localWidth = lerp(dripperTop * 0.7, dripperBottom * 1.02, coffee.depth);
+      const lateralNorm = constrain((coffee.pos.x - bed.x) / bed.w, 0, 1);
+      const depthNorm = constrain((coffee.pos.y - bed.y) / bed.h, 0, 1);
+      const localWidth = lerp(dripperTop * 0.72, dripperBottom * 1.02, depthNorm);
       const px = cx + map(lateralNorm, 0, 1, -localWidth, localWidth);
-      const py = lerp(bedTop + 4, bedBottom - 4, coffee.depth) + sin(i * 0.7 + frameCount * 0.02) * 1.6;
-      fill(coffee.isFine ? 60 : 118, coffee.isFine ? 38 : 78, coffee.isFine ? 25 : 42, coffee.isFine ? 190 : 150);
+      const py = lerp(bedTop + 4, bedBottom - 4, depthNorm);
+      fill(red(coffee.renderColor), green(coffee.renderColor), blue(coffee.renderColor), coffee.isFine ? 190 : 155);
       ellipse(px, py, coffee.radius * 0.78, coffee.radius * 0.62);
     }
 
@@ -595,11 +675,12 @@ class BrewSimulation {
   }
 
   averageDepth(finesOnly) {
+    const bed = this.bedRect;
     let total = 0;
     let count = 0;
     for (const coffee of this.coffeeParticles) {
       if (coffee.isFine === finesOnly) {
-        total += coffee.depth;
+        total += constrain((coffee.pos.y - bed.y) / bed.h, 0, 1);
         count += 1;
       }
     }
@@ -664,11 +745,12 @@ class CoffeeParticle {
     this.mass = max(0.8, this.radius * 0.7);
     this.isFine = isFine;
     this.lastHit = -999;
-    this.depth = constrain(randomGaussian(0.52, 0.16), 0.08, 0.92);
-    this.depthVel = 0;
     this.baseColor = isFine
       ? color(84, 52, 31, 170)
       : color(146, 98, 52, 130);
+    this.colorSeed = isFine ? 0.82 : 0.64;
+    this.solubleMax = map(this.radius, 1.8, 12, 0.045, 0.14, true);
+    this.solubleLeft = this.solubleMax;
   }
 
   applyForce(force) {
@@ -677,40 +759,36 @@ class CoffeeParticle {
 
   update(dt) {
     this.vel.add(p5.Vector.mult(this.acc, dt * 60));
-    this.vel.limit(this.isFine ? 2.4 : 1.8);
+    this.vel.limit(this.isFine ? 1.9 : 1.5);
     this.pos.add(p5.Vector.mult(this.vel, dt * 60));
     this.acc.mult(0);
   }
 
-  updateDepth(localEnergy, threshold, dt) {
-    const mixedTarget = 0.52 + (this.isFine ? 0.06 : -0.05);
-    const sortedTarget = this.isFine ? 0.78 : 0.26;
-    const sortAmount = constrain(map(localEnergy, threshold, threshold * 2.4, 0, 1), 0, 1);
-    const target = lerp(mixedTarget, sortedTarget, sortAmount);
-    const pull = (target - this.depth) * (0.06 + sortAmount * 0.12);
-    this.depthVel += pull * dt * 60;
-    this.depthVel *= 0.92;
-    this.depth = constrain(this.depth + this.depthVel * dt * 1.8, 0.06, 0.94);
-  }
-
   keepInsideBed(bed) {
-    const nx = (this.pos.x - bed.cx) / bed.rx;
-    const ny = (this.pos.y - bed.cy) / bed.ry;
-    const d = nx * nx + ny * ny;
-    if (d <= 1) {
-      return;
+    if (this.pos.x < bed.x + this.radius) {
+      this.pos.x = bed.x + this.radius;
+      this.vel.x *= -0.25;
     }
-    const angle = atan2(this.pos.y - bed.cy, this.pos.x - bed.cx);
-    this.pos.x = bed.cx + cos(angle) * (bed.rx - this.radius * 0.35);
-    this.pos.y = bed.cy + sin(angle) * (bed.ry - this.radius * 0.35);
-    this.vel.mult(0.7);
+    if (this.pos.x > bed.x + bed.w - this.radius) {
+      this.pos.x = bed.x + bed.w - this.radius;
+      this.vel.x *= -0.25;
+    }
+    if (this.pos.y < bed.y + this.radius) {
+      this.pos.y = bed.y + this.radius;
+      this.vel.y *= -0.2;
+    }
+    if (this.pos.y > bed.y + bed.h - this.radius) {
+      this.pos.y = bed.y + bed.h - this.radius;
+      this.vel.y *= -0.18;
+    }
   }
 
   render() {
     const hitGlow = constrain(map(frameCount - this.lastHit, 0, 12, 95, 0), 0, 95);
-    const depthTint = lerp(1.15, 0.72, this.depth);
+    const yieldRatio = this.solubleLeft / this.solubleMax;
+    this.renderColor = lerpColor(color(176, 149, 118, 110), this.baseColor, yieldRatio);
     noStroke();
-    fill(red(this.baseColor) * depthTint, green(this.baseColor) * depthTint, blue(this.baseColor) * depthTint, alpha(this.baseColor));
+    fill(red(this.renderColor), green(this.renderColor), blue(this.renderColor), alpha(this.baseColor));
     ellipse(this.pos.x, this.pos.y, this.radius * 2.1);
     fill(255, 210, 168, hitGlow);
     ellipse(this.pos.x, this.pos.y, this.radius * 2.7);
@@ -728,6 +806,10 @@ class WaterParticle {
     this.mass = this.radius * 0.45;
     this.seed = random(1000);
     this.lastSoundFrame = -999;
+    this.extractLoad = 0;
+    this.maxYield = random(0.16, 0.26);
+    this.brewTint = random(0.58, 0.72);
+    this.displayColor = color(142, 211, 236, 170);
   }
 
   applyForce(force) {
@@ -737,30 +819,45 @@ class WaterParticle {
   update(dt) {
     const tempBoost = map(this.temperature, 70, 100, 0.98, 1.35);
     this.vel.add(p5.Vector.mult(this.acc, dt * 60));
-    this.vel.mult(0.994);
+    this.vel.mult(0.992);
     this.vel.limit(3.8 * tempBoost);
     this.pos.add(p5.Vector.mult(this.vel, dt * 60));
     this.acc.mult(0);
     this.life -= dt;
+
+    const brewRatio = constrain(this.extractLoad / this.maxYield, 0, 1);
+    this.displayColor = lerpColor(
+      color(142, 211, 236, 155),
+      color(86 + this.brewTint * 55, 52 + this.brewTint * 24, 29 + this.brewTint * 15, 190),
+      brewRatio
+    );
   }
 
-  wrap(bounds) {
-    if (this.pos.x < bounds.x + this.radius) {
-      this.pos.x = bounds.x + this.radius;
-      this.vel.x *= -0.35;
+  keepInsideColumn(bounds, bed) {
+    const wallLeft = bed.x - 12;
+    const wallRight = bed.x + bed.w + 12;
+    if (this.pos.x < wallLeft + this.radius) {
+      this.pos.x = wallLeft + this.radius;
+      this.vel.x *= -0.45;
     }
-    if (this.pos.x > bounds.x + bounds.w - this.radius) {
-      this.pos.x = bounds.x + bounds.w - this.radius;
-      this.vel.x *= -0.35;
+    if (this.pos.x > wallRight - this.radius) {
+      this.pos.x = wallRight - this.radius;
+      this.vel.x *= -0.45;
+    }
+    if (this.pos.y < bounds.y - 20) {
+      this.pos.y = bounds.y - 20;
+    }
+    if (this.pos.y > bed.y + bed.h + 35) {
+      this.life = -1;
     }
   }
 
   render() {
     const speedGlow = constrain(this.vel.mag() * 32, 18, 95);
     noStroke();
-    fill(116, 176, 209, 40);
+    fill(red(this.displayColor), green(this.displayColor), blue(this.displayColor), 38);
     ellipse(this.pos.x, this.pos.y, this.radius * 4.2);
-    fill(142, 211, 236, speedGlow);
+    fill(red(this.displayColor), green(this.displayColor), blue(this.displayColor), speedGlow);
     ellipse(this.pos.x, this.pos.y, this.radius * 1.9);
   }
 }
