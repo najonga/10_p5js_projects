@@ -314,7 +314,7 @@ class BrewSimulation {
     const params = this.params;
     const bounds = this.brewBounds;
     const bed = this.bedRect;
-    const speedScale = 0.1;
+    const speedScale = 0.13;
     const gravity = createVector(0, 14 * params.pourForce * speedScale);
     const tempAmp = map(params.waterTemp, 70, 100, 0.09, 0.5) * speedScale;
     const swirl = params.turbulence * 0.18 * speedScale;
@@ -346,14 +346,25 @@ class BrewSimulation {
     const threshold = 2.7 + params.turbulence * 1.2 + params.pourForce * 1.0;
 
     for (const coffee of this.coffeeParticles) {
-      const damping = p5.Vector.mult(coffee.vel, -0.15);
-      coffee.applyForce(damping);
-      coffee.applyForce(createVector(0, 0.04 * coffee.mass));
-
       const field = this.sampleWaterField(coffee.pos, 85);
+      const localEnergy = this.sampleWaterEnergy(coffee.pos, 82);
+      const wetContact = this.hasNearbyWater(coffee.pos, coffee.radius + 26);
+
+      if (wetContact || localEnergy > 0.002) {
+        coffee.asleep = false;
+      }
+
+      if (coffee.asleep) {
+        coffee.acc.mult(0);
+        coffee.vel.set(0, 0);
+        coffee.keepInsideBed(bed);
+        continue;
+      }
+
+      const damping = p5.Vector.mult(coffee.vel, -0.34);
+      coffee.applyForce(damping);
       coffee.applyForce(field.mult(coffee.isFine ? 0.85 : 0.65));
 
-      const localEnergy = this.sampleWaterEnergy(coffee.pos, 82);
       if (localEnergy > threshold) {
         const sortForce = coffee.isFine ? 0.085 : -0.07;
         coffee.applyForce(createVector(0, sortForce * coffee.mass));
@@ -364,6 +375,11 @@ class BrewSimulation {
 
       coffee.update(dt);
       coffee.keepInsideBed(bed);
+
+      if (!wetContact && localEnergy < 0.0007 && coffee.vel.magSq() < 0.00018) {
+        coffee.vel.set(0, 0);
+        coffee.asleep = true;
+      }
     }
 
     this.resolveCoffeePacking();
@@ -414,6 +430,15 @@ class BrewSimulation {
     return total / count;
   }
 
+  hasNearbyWater(pos, radius) {
+    for (const water of this.waterParticles) {
+      if (p5.Vector.dist(pos, water.pos) < radius + water.radius) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   resolveCoffeePacking() {
     for (let i = 0; i < this.coffeeParticles.length; i += 1) {
       const a = this.coffeeParticles[i];
@@ -432,12 +457,20 @@ class BrewSimulation {
         a.pos.add(p5.Vector.mult(normal, -overlap * (1 / a.mass) / totalInvMass));
         b.pos.add(p5.Vector.mult(normal, overlap * (1 / b.mass) / totalInvMass));
 
+        if (a.asleep && b.asleep) {
+          a.vel.set(0, 0);
+          b.vel.set(0, 0);
+          a.keepInsideBed(this.bedRect);
+          b.keepInsideBed(this.bedRect);
+          continue;
+        }
+
         const relative = p5.Vector.sub(b.vel, a.vel);
         const speed = relative.dot(normal);
         if (speed >= 0) {
           continue;
         }
-        const impulseMag = (-0.32 * speed) / totalInvMass;
+        const impulseMag = (-0.12 * speed) / totalInvMass;
         const impulse = p5.Vector.mult(normal, impulseMag);
         a.vel.sub(p5.Vector.div(impulse, a.mass));
         b.vel.add(p5.Vector.div(impulse, b.mass));
@@ -638,12 +671,13 @@ class BrewSimulation {
 class CoffeeParticle {
   constructor(x, y, size, isFine) {
     this.pos = createVector(x, y);
-    this.vel = p5.Vector.random2D().mult(random(0.01, 0.12));
+    this.vel = createVector(0, 0);
     this.acc = createVector(0, 0);
     this.radius = size * 0.5;
     this.mass = max(0.8, this.radius * 0.7);
     this.isFine = isFine;
     this.lastHit = -999;
+    this.asleep = true;
     this.baseColor = isFine
       ? color(34, 18, 10, 220)
       : color(58, 28, 14, 210);
@@ -697,7 +731,7 @@ class CoffeeParticle {
 class WaterParticle {
   constructor(x, y, temperature) {
     this.pos = createVector(x, y);
-    this.vel = createVector(random(-0.05, 0.05), random(0.08, 0.16));
+    this.vel = createVector(random(-0.065, 0.065), random(0.104, 0.208));
     this.acc = createVector(0, 0);
     this.temperature = temperature;
     this.life = random(18, 26);
@@ -719,7 +753,7 @@ class WaterParticle {
     const tempBoost = map(this.temperature, 70, 100, 0.98, 1.35);
     this.vel.add(p5.Vector.mult(this.acc, dt * 60));
     this.vel.mult(0.9992);
-    this.vel.limit(0.38 * tempBoost);
+    this.vel.limit(0.494 * tempBoost);
     this.pos.add(p5.Vector.mult(this.vel, dt * 60));
     this.acc.mult(0);
     this.life -= dt;
