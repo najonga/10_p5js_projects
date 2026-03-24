@@ -74,7 +74,7 @@ function setupUI() {
     const wrap = createDiv("");
     wrap.style("position", "absolute");
     wrap.style("color", "#f2e7d0");
-    wrap.style("font-family", "Georgia, serif");
+    wrap.style("font-family", "\"Helvetica Neue\", Helvetica, Arial, sans-serif");
     wrap.style("font-size", "12px");
     wrap.style("letter-spacing", "0.05em");
     wrap.style("text-transform", "uppercase");
@@ -206,6 +206,7 @@ class BrewSimulation {
     this.coffeeParticles.length = 0;
     this.waterParticles.length = 0;
     this.generateCoffeeBed();
+    this.settleCoffeeBed(18);
     this.waterParticles.push(this.createWaterParticle());
   }
 
@@ -228,44 +229,44 @@ class BrewSimulation {
 
   generateCoffeeBed() {
     const bed = this.bedRect;
+    const meanDiameter = constrain(this.params.meanGrind * 1.9, 16, 56);
+    const xStep = max(14, meanDiameter * 0.72);
+    const yStep = max(12, meanDiameter * 0.68);
+    const cols = max(1, floor((bed.w - 8) / xStep));
+    const rows = max(1, floor((bed.h - 8) / yStep));
+    const maxCount = min(this.maxCoffee, cols * rows);
     const placed = [];
-    const targetCoverage = bed.w * bed.h * 0.9;
-    const maxAttempts = this.maxCoffee * 24;
-    let attempts = 0;
-    let coverage = 0;
 
-    while (placed.length < this.maxCoffee && attempts < maxAttempts && coverage < targetCoverage) {
-      attempts += 1;
-      const specs = this.sampleCoffeeSpecs();
-      const r = specs.size * 0.5;
-      const x = random(bed.x + r + 2, bed.x + bed.w - r - 2);
-      const yBias = pow(random(), 0.58);
-      const y = lerp(bed.y + r + 2, bed.y + bed.h - r - 2, yBias);
-      let blocked = false;
-      for (const other of placed) {
-        if (dist(x, y, other.pos.x, other.pos.y) < r + other.radius + 0.25) {
-          blocked = true;
-          break;
-        }
+    for (let row = 0; row < rows && placed.length < maxCount; row += 1) {
+      const y = bed.y + bed.h - 8 - row * yStep;
+      const offset = row % 2 === 0 ? 0 : xStep * 0.5;
+      for (let col = 0; col < cols && placed.length < maxCount; col += 1) {
+        const specs = this.sampleCoffeeSpecs();
+        const r = specs.size * 0.5;
+        let x = bed.x + 8 + col * xStep + offset;
+        x += random(-xStep * 0.08, xStep * 0.08);
+        const yy = y + random(-yStep * 0.05, yStep * 0.05);
+        x = constrain(x, bed.x + r + 1, bed.x + bed.w - r - 1);
+        const py = constrain(yy, bed.y + r + 1, bed.y + bed.h - r - 1);
+        placed.push(new CoffeeParticle(x, py, specs.size, specs.isFine));
       }
-      if (!blocked) {
-        const particle = new CoffeeParticle(x, y, specs.size, specs.isFine);
-        placed.push(particle);
-        coverage += PI * particle.radius * particle.radius * 0.82;
-      }
-    }
-
-    while (placed.length < this.maxCoffee && coverage < targetCoverage * 1.03) {
-      const specs = this.sampleCoffeeSpecs();
-      const r = specs.size * 0.5;
-      const x = random(bed.x + r + 2, bed.x + bed.w - r - 2);
-      const y = random(bed.y + r + 2, bed.y + bed.h - r - 2);
-      const particle = new CoffeeParticle(x, y, specs.size, specs.isFine);
-      placed.push(particle);
-      coverage += PI * particle.radius * particle.radius * 0.72;
     }
 
     this.coffeeParticles = placed;
+  }
+
+  settleCoffeeBed(iterations) {
+    for (const coffee of this.coffeeParticles) {
+      coffee.vel.set(0, 0);
+      coffee.acc.set(0, 0);
+      coffee.asleep = true;
+    }
+    for (let i = 0; i < iterations; i += 1) {
+      this.resolveCoffeePacking();
+      for (const coffee of this.coffeeParticles) {
+        coffee.keepInsideBed(this.bedRect);
+      }
+    }
   }
 
   createWaterParticle() {
@@ -536,7 +537,7 @@ class BrewSimulation {
   handleCollisions() {
     for (const water of this.waterParticles) {
       for (const coffee of this.coffeeParticles) {
-        const impact = this.resolvePair(water, coffee, 0.42, 0.12);
+        const impact = this.resolvePair(water, coffee, 0.22, 0.04);
         if (impact === null) {
           continue;
         }
@@ -546,7 +547,7 @@ class BrewSimulation {
         this.transferExtraction(water, coffee, impact);
 
         this.collisionCountFrame += 1;
-        if (frameCount - water.lastSoundFrame > 2) {
+        if (frameCount - water.lastSoundFrame > 8) {
           this.audio.trigger(coffee.radius, impact, this.currentFlow);
           water.lastSoundFrame = frameCount;
         }
@@ -595,7 +596,6 @@ class BrewSimulation {
   render() {
     this.renderBackdrop();
     this.renderMicroField();
-    this.renderTDSGauge();
   }
 
   renderBackdrop() {
@@ -619,53 +619,6 @@ class BrewSimulation {
     }
   }
 
-  renderTDSGauge() {
-    const panelX = this.rightX;
-    const panelW = width - panelX;
-    const gaugeX = panelX + panelW * 0.82;
-    const gaugeY = height * 0.14;
-    const gaugeH = height * 0.66;
-    const normalized = constrain(this.currentTDS / 12, 0, 1);
-    const peakNorm = constrain((this.optimalTime - min(this.elapsed, this.optimalTime)) / this.optimalTime, 0, 1);
-
-    noFill();
-    stroke(245, 228, 203, 60);
-    rect(gaugeX, gaugeY, 14, gaugeH);
-
-    for (let i = 0; i < 36; i += 1) {
-      const t = i / 35;
-      const yy = gaugeY + gaugeH - t * gaugeH;
-      stroke(255, 242, 214, 22);
-      line(gaugeX - 7, yy, gaugeX + 21, yy);
-    }
-
-    noStroke();
-    for (let i = 0; i < 46; i += 1) {
-      const t = i / 45;
-      const yy = gaugeY + gaugeH - t * gaugeH;
-      const active = t < normalized;
-      fill(
-        active ? lerp(116, 236, t) : 56,
-        active ? lerp(71, 196, t) : 36,
-        active ? lerp(38, 118, t) : 24,
-        active ? 210 : 28
-      );
-      rect(gaugeX + 1, yy, 12, gaugeH / 45 + 1);
-    }
-
-    const peakY = gaugeY + gaugeH * peakNorm;
-    stroke(255, 188, 125, 190);
-    line(gaugeX - 10, peakY, gaugeX + 24, peakY);
-
-    noStroke();
-    fill(245, 223, 196, 180);
-    textAlign(CENTER, BOTTOM);
-    textSize(width * 0.009);
-    text("TDS", gaugeX + 7, gaugeY - 12);
-    textAlign(CENTER, TOP);
-    textSize(width * 0.0083);
-    text(nf(this.currentTDS, 1, 2), gaugeX + 7, gaugeY + gaugeH + 10);
-  }
 }
 
 class CoffeeParticle {
@@ -736,7 +689,7 @@ class WaterParticle {
     this.temperature = temperature;
     this.life = random(18, 26);
     this.radius = random(3.2, 5.4);
-    this.mass = this.radius * 0.45;
+    this.mass = this.radius * 0.82;
     this.seed = random(1000);
     this.lastSoundFrame = -999;
     this.extractLoad = 0;
