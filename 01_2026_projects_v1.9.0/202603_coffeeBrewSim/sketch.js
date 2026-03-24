@@ -11,6 +11,8 @@ function setup() {
   const dims = getCanvasSize();
   createCanvas(dims.w, dims.h);
   pixelDensity(1);
+  strokeCap(SQUARE);
+  strokeJoin(MITER);
   setupUI();
   sim = new BrewSimulation();
   textFont("Georgia");
@@ -115,15 +117,6 @@ function positionUI() {
 }
 
 function renderOverlay() {
-  noStroke();
-  fill(255, 244, 226, 220);
-  textAlign(LEFT, TOP);
-  textSize(width * 0.014);
-  text("Microsound Coffee Extraction", width * 0.03, height * 0.035);
-  fill(220, 197, 162, 180);
-  textSize(width * 0.0098);
-  text("Click to activate sound. Drag in the left field to agitate the flow.", width * 0.03, height * 0.064);
-
   for (const key of Object.keys(controls)) {
     const v = controls[key].slider.value();
     controls[key].value.html(nf(v, 1, key === "waterTemp" || key === "meanGrind" ? 1 : 2));
@@ -136,8 +129,8 @@ class BrewSimulation {
     this.elapsed = 0;
     this.coffeeParticles = [];
     this.waterParticles = [];
-    this.maxCoffee = 240;
-    this.maxWater = 150;
+    this.maxCoffee = 320;
+    this.maxWater = 1;
     this.spawnAccumulator = 0;
     this.collisionCountFrame = 0;
     this.collisionHistory = [];
@@ -186,11 +179,13 @@ class BrewSimulation {
 
   get bedRect() {
     const bounds = this.brewBounds;
+    const w = min(bounds.w * 0.62, bounds.h * 0.5);
+    const h = w * 2;
     return {
-      x: bounds.x + bounds.w * 0.18,
-      y: bounds.y + bounds.h * 0.26,
-      w: bounds.w * 0.64,
-      h: bounds.h * 0.56
+      x: bounds.x + bounds.w * 0.5 - w * 0.5,
+      y: bounds.y + bounds.h * 0.02,
+      w,
+      h
     };
   }
 
@@ -211,9 +206,7 @@ class BrewSimulation {
     this.coffeeParticles.length = 0;
     this.waterParticles.length = 0;
     this.generateCoffeeBed();
-    for (let i = 0; i < this.maxWater * 0.55; i += 1) {
-      this.waterParticles.push(this.createWaterParticle());
-    }
+    this.waterParticles.push(this.createWaterParticle());
   }
 
   sampleCoffeeSpecs() {
@@ -229,41 +222,47 @@ class BrewSimulation {
       const sd = lerp(mean * 0.7, mean * 0.12, uniformity);
       size = randomGaussian(mean, sd);
     }
-    size = constrain(size, 3.2, 26);
+    size = constrain(size * 1.9, 16, 56);
     return { size, isFine };
   }
 
   generateCoffeeBed() {
     const bed = this.bedRect;
     const placed = [];
-    const maxAttempts = this.maxCoffee * 18;
+    const targetCoverage = bed.w * bed.h * 0.9;
+    const maxAttempts = this.maxCoffee * 24;
     let attempts = 0;
+    let coverage = 0;
 
-    while (placed.length < this.maxCoffee && attempts < maxAttempts) {
+    while (placed.length < this.maxCoffee && attempts < maxAttempts && coverage < targetCoverage) {
       attempts += 1;
       const specs = this.sampleCoffeeSpecs();
       const r = specs.size * 0.5;
-      const x = random(bed.x + r + 6, bed.x + bed.w - r - 6);
+      const x = random(bed.x + r + 2, bed.x + bed.w - r - 2);
       const yBias = pow(random(), 0.58);
-      const y = lerp(bed.y + r + 6, bed.y + bed.h - r - 6, yBias);
+      const y = lerp(bed.y + r + 2, bed.y + bed.h - r - 2, yBias);
       let blocked = false;
       for (const other of placed) {
-        if (dist(x, y, other.pos.x, other.pos.y) < r + other.radius + 1.5) {
+        if (dist(x, y, other.pos.x, other.pos.y) < r + other.radius + 0.25) {
           blocked = true;
           break;
         }
       }
       if (!blocked) {
-        placed.push(new CoffeeParticle(x, y, specs.size, specs.isFine));
+        const particle = new CoffeeParticle(x, y, specs.size, specs.isFine);
+        placed.push(particle);
+        coverage += PI * particle.radius * particle.radius * 0.82;
       }
     }
 
-    while (placed.length < this.maxCoffee) {
+    while (placed.length < this.maxCoffee && coverage < targetCoverage * 1.03) {
       const specs = this.sampleCoffeeSpecs();
       const r = specs.size * 0.5;
-      const x = random(bed.x + r + 6, bed.x + bed.w - r - 6);
-      const y = random(bed.y + r + 6, bed.y + bed.h - r - 6);
-      placed.push(new CoffeeParticle(x, y, specs.size, specs.isFine));
+      const x = random(bed.x + r + 2, bed.x + bed.w - r - 2);
+      const y = random(bed.y + r + 2, bed.y + bed.h - r - 2);
+      const particle = new CoffeeParticle(x, y, specs.size, specs.isFine);
+      placed.push(particle);
+      coverage += PI * particle.radius * particle.radius * 0.72;
     }
 
     this.coffeeParticles = placed;
@@ -304,7 +303,7 @@ class BrewSimulation {
 
   spawnWater(dt) {
     const params = this.params;
-    this.spawnAccumulator += dt * (24 + params.pourForce * 36);
+    this.spawnAccumulator += dt * (0.18 + params.pourForce * 0.12);
     while (this.spawnAccumulator > 1 && this.waterParticles.length < this.maxWater) {
       this.spawnAccumulator -= 1;
       this.waterParticles.push(this.createWaterParticle());
@@ -315,9 +314,10 @@ class BrewSimulation {
     const params = this.params;
     const bounds = this.brewBounds;
     const bed = this.bedRect;
-    const gravity = createVector(0, 14 * params.pourForce);
-    const tempAmp = map(params.waterTemp, 70, 100, 0.09, 0.5);
-    const swirl = params.turbulence * 0.18;
+    const speedScale = 0.1;
+    const gravity = createVector(0, 14 * params.pourForce * speedScale);
+    const tempAmp = map(params.waterTemp, 70, 100, 0.09, 0.5) * speedScale;
+    const swirl = params.turbulence * 0.18 * speedScale;
 
     for (const water of this.waterParticles) {
       water.temperature = params.waterTemp;
@@ -327,12 +327,12 @@ class BrewSimulation {
       const jitter = p5.Vector.fromAngle(noiseAngle).mult(tempAmp + swirl);
       water.applyForce(jitter);
 
-      const lateral = sin(frameCount * 0.035 + water.seed * 6.0) * (0.012 + params.turbulence * 0.028);
+      const lateral = sin(frameCount * 0.035 + water.seed * 6.0) * (0.012 + params.turbulence * 0.028) * speedScale;
       water.applyForce(createVector(lateral, 0));
 
       if (water.pos.y > bed.y && water.pos.y < bed.y + bed.h) {
-        water.vel.mult(0.988);
-        water.applyForce(createVector(0, 0.08));
+        water.vel.mult(0.9988);
+        water.applyForce(createVector(0, 0.008));
       }
 
       water.update(dt);
@@ -562,45 +562,20 @@ class BrewSimulation {
   render() {
     this.renderBackdrop();
     this.renderMicroField();
-    this.renderSectionView();
     this.renderTDSGauge();
   }
 
   renderBackdrop() {
-    noStroke();
-    const leftW = this.leftW;
-    for (let i = 0; i < 18; i += 1) {
-      const t = i / 17;
-      fill(lerp(20, 6, t), lerp(16, 10, t), lerp(10, 18, t), 120);
-      rect(0, height * t, leftW, height / 17 + 1);
-    }
-    fill(34, 24, 20, 120);
-    rect(this.rightX, 0, width - this.rightX, height);
-
-    stroke(214, 179, 124, 28);
-    line(this.rightX, height * 0.06, this.rightX, height * 0.94);
+    background(2, 2, 2);
   }
 
   renderMicroField() {
-    const bounds = this.brewBounds;
     const bed = this.bedRect;
-    noFill();
-    stroke(227, 196, 150, 40);
-    rect(bounds.x, bounds.y, bounds.w, bounds.h, 26);
-
-    for (let i = 0; i < 42; i += 1) {
-      const y = bounds.y + (bounds.h / 42) * i;
-      stroke(255, 230, 190, 10);
-      line(bounds.x + 10, y, bounds.x + bounds.w - 10, y);
-    }
-
-    noStroke();
-    fill(24, 20, 18, 150);
-    rect(bed.x - 10, bed.y - 18, bed.w + 20, bed.h + 46, 18);
-    fill(78, 50, 28, 110);
-    rect(bed.x, bed.y, bed.w, bed.h, 12);
-    fill(255, 225, 180, 24);
-    rect(bed.x, bed.y - 12, bed.w, 12, 8);
+    stroke(255, 255, 255, 228);
+    strokeWeight(2);
+    line(bed.x, bed.y, bed.x, bed.y + bed.h);
+    line(bed.x + bed.w, bed.y, bed.x + bed.w, bed.y + bed.h);
+    line(bed.x, bed.y + bed.h, bed.x + bed.w, bed.y + bed.h);
 
     noStroke();
     for (const water of this.waterParticles) {
@@ -609,82 +584,6 @@ class BrewSimulation {
     for (const coffee of this.coffeeParticles) {
       coffee.render();
     }
-
-    fill(255, 214, 173, 28);
-    rect(bed.x + bed.w * 0.25, bed.y - 22, bed.w * 0.5, 10, 6);
-  }
-
-  renderSectionView() {
-    const section = this.bedSection;
-    const { panelX, panelW, cx, topY, bottomY, dripperTop, dripperBottom, bedTop, bedBottom } = section;
-
-    noFill();
-    stroke(240, 214, 174, 90);
-    strokeWeight(2);
-    beginShape();
-    vertex(cx - dripperTop, topY);
-    vertex(cx - dripperBottom, bottomY);
-    vertex(cx + dripperBottom, bottomY);
-      vertex(cx + dripperTop, topY);
-    endShape(CLOSE);
-
-    const waterColumn = map(this.currentFlow, 0, 10, panelW * 0.025, panelW * 0.075, true);
-    strokeWeight(1);
-    const sourceBed = this.bedRect;
-    for (const water of this.waterParticles) {
-      const mappedY = map(constrain(water.pos.y, sourceBed.y - 50, sourceBed.y + sourceBed.h), sourceBed.y - 50, sourceBed.y + sourceBed.h, topY + 12, bottomY - 8);
-      const drift = map(water.pos.x, sourceBed.x, sourceBed.x + sourceBed.w, -dripperBottom * 0.85, dripperBottom * 0.85);
-      noStroke();
-      fill(red(water.displayColor), green(water.displayColor), blue(water.displayColor), 115);
-      ellipse(cx + drift * 0.45, mappedY, waterColumn, waterColumn * 1.3);
-    }
-
-    noStroke();
-    fill(73, 46, 29, 145);
-    beginShape();
-    vertex(cx - dripperTop * 0.7, bedTop);
-    vertex(cx - dripperBottom * 1.02, bedBottom);
-    vertex(cx + dripperBottom * 1.02, bedBottom);
-    vertex(cx + dripperTop * 0.7, bedTop);
-    endShape(CLOSE);
-
-    const bed = this.bedRect;
-    const sampleStep = max(1, floor(this.coffeeParticles.length / 130));
-    for (let i = 0; i < this.coffeeParticles.length; i += sampleStep) {
-      const coffee = this.coffeeParticles[i];
-      const lateralNorm = constrain((coffee.pos.x - bed.x) / bed.w, 0, 1);
-      const depthNorm = constrain((coffee.pos.y - bed.y) / bed.h, 0, 1);
-      const localWidth = lerp(dripperTop * 0.72, dripperBottom * 1.02, depthNorm);
-      const px = cx + map(lateralNorm, 0, 1, -localWidth, localWidth);
-      const py = lerp(bedTop + 4, bedBottom - 4, depthNorm);
-      fill(red(coffee.renderColor), green(coffee.renderColor), blue(coffee.renderColor), coffee.isFine ? 190 : 155);
-      ellipse(px, py, coffee.radius * 0.78, coffee.radius * 0.62);
-    }
-
-    const coarseAvg = this.averageDepth(false);
-    const fineAvg = this.averageDepth(true);
-
-    fill(240, 221, 197, 170);
-    textAlign(LEFT, TOP);
-    textSize(width * 0.01);
-    text("Section View", panelX + panelW * 0.08, height * 0.08);
-    textSize(width * 0.0086);
-    text(`Coarse depth ${nf(coarseAvg, 1, 2)}`, panelX + panelW * 0.08, height * 0.12);
-    text(`Fine depth ${nf(fineAvg, 1, 2)}`, panelX + panelW * 0.08, height * 0.145);
-    text(`Flow index ${nf(this.currentFlow, 1, 2)}`, panelX + panelW * 0.08, height * 0.17);
-  }
-
-  averageDepth(finesOnly) {
-    const bed = this.bedRect;
-    let total = 0;
-    let count = 0;
-    for (const coffee of this.coffeeParticles) {
-      if (coffee.isFine === finesOnly) {
-        total += constrain((coffee.pos.y - bed.y) / bed.h, 0, 1);
-        count += 1;
-      }
-    }
-    return count === 0 ? 0 : total / count;
   }
 
   renderTDSGauge() {
@@ -698,7 +597,7 @@ class BrewSimulation {
 
     noFill();
     stroke(245, 228, 203, 60);
-    rect(gaugeX, gaugeY, 14, gaugeH, 10);
+    rect(gaugeX, gaugeY, 14, gaugeH);
 
     for (let i = 0; i < 36; i += 1) {
       const t = i / 35;
@@ -746,8 +645,8 @@ class CoffeeParticle {
     this.isFine = isFine;
     this.lastHit = -999;
     this.baseColor = isFine
-      ? color(84, 52, 31, 170)
-      : color(146, 98, 52, 130);
+      ? color(34, 18, 10, 220)
+      : color(58, 28, 14, 210);
     this.colorSeed = isFine ? 0.82 : 0.64;
     this.solubleMax = map(this.radius, 1.8, 12, 0.045, 0.14, true);
     this.solubleLeft = this.solubleMax;
@@ -786,30 +685,30 @@ class CoffeeParticle {
   render() {
     const hitGlow = constrain(map(frameCount - this.lastHit, 0, 12, 95, 0), 0, 95);
     const yieldRatio = this.solubleLeft / this.solubleMax;
-    this.renderColor = lerpColor(color(176, 149, 118, 110), this.baseColor, yieldRatio);
+    this.renderColor = lerpColor(color(104, 82, 62, 120), this.baseColor, yieldRatio);
     noStroke();
     fill(red(this.renderColor), green(this.renderColor), blue(this.renderColor), alpha(this.baseColor));
-    ellipse(this.pos.x, this.pos.y, this.radius * 2.1);
-    fill(255, 210, 168, hitGlow);
-    ellipse(this.pos.x, this.pos.y, this.radius * 2.7);
+    ellipse(this.pos.x, this.pos.y, this.radius * 2.0);
+    fill(255, 242, 218, hitGlow * 0.65);
+    ellipse(this.pos.x, this.pos.y, this.radius * 2.22);
   }
 }
 
 class WaterParticle {
   constructor(x, y, temperature) {
     this.pos = createVector(x, y);
-    this.vel = createVector(random(-0.5, 0.5), random(0.8, 1.6));
+    this.vel = createVector(random(-0.05, 0.05), random(0.08, 0.16));
     this.acc = createVector(0, 0);
     this.temperature = temperature;
-    this.life = random(5.8, 9.8);
-    this.radius = random(2.6, 4.8);
+    this.life = random(18, 26);
+    this.radius = random(3.2, 5.4);
     this.mass = this.radius * 0.45;
     this.seed = random(1000);
     this.lastSoundFrame = -999;
     this.extractLoad = 0;
     this.maxYield = random(0.16, 0.26);
     this.brewTint = random(0.58, 0.72);
-    this.displayColor = color(142, 211, 236, 170);
+    this.displayColor = color(236, 247, 255, 200);
   }
 
   applyForce(force) {
@@ -819,16 +718,16 @@ class WaterParticle {
   update(dt) {
     const tempBoost = map(this.temperature, 70, 100, 0.98, 1.35);
     this.vel.add(p5.Vector.mult(this.acc, dt * 60));
-    this.vel.mult(0.992);
-    this.vel.limit(3.8 * tempBoost);
+    this.vel.mult(0.9992);
+    this.vel.limit(0.38 * tempBoost);
     this.pos.add(p5.Vector.mult(this.vel, dt * 60));
     this.acc.mult(0);
     this.life -= dt;
 
     const brewRatio = constrain(this.extractLoad / this.maxYield, 0, 1);
     this.displayColor = lerpColor(
-      color(142, 211, 236, 155),
-      color(86 + this.brewTint * 55, 52 + this.brewTint * 24, 29 + this.brewTint * 15, 190),
+      color(238, 248, 255, 190),
+      color(126 + this.brewTint * 32, 86 + this.brewTint * 20, 52 + this.brewTint * 10, 205),
       brewRatio
     );
   }
@@ -855,10 +754,10 @@ class WaterParticle {
   render() {
     const speedGlow = constrain(this.vel.mag() * 32, 18, 95);
     noStroke();
-    fill(red(this.displayColor), green(this.displayColor), blue(this.displayColor), 38);
-    ellipse(this.pos.x, this.pos.y, this.radius * 4.2);
+    fill(red(this.displayColor), green(this.displayColor), blue(this.displayColor), 44);
+    ellipse(this.pos.x, this.pos.y, this.radius * 3.3);
     fill(red(this.displayColor), green(this.displayColor), blue(this.displayColor), speedGlow);
-    ellipse(this.pos.x, this.pos.y, this.radius * 1.9);
+    ellipse(this.pos.x, this.pos.y, this.radius * 2.0);
   }
 }
 
