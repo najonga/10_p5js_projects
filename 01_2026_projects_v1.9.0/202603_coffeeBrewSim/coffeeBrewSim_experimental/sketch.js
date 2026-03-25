@@ -1,39 +1,35 @@
-const DESIGN_W = 1280;
-const DESIGN_H = 720;
 const ASPECT = 16 / 9;
 
 let sim;
 
+// p5.js starts here: create the canvas and initialize the physics demo.
 function setup() {
   const dims = getCanvasSize();
   createCanvas(dims.w, dims.h);
   pixelDensity(1);
-  textFont("Georgia");
   sim = new SingleParticleBrewSim();
 }
 
+// Runs every frame: clear the screen, advance physics, then draw the result.
 function draw() {
-  background(10, 8, 6);
+  background(255); // #F5F5F5 background color.
   sim.update();
   sim.render();
 }
 
+// Keep click-to-restart so the collision can be replayed at any time.
 function mousePressed() {
   sim.reset();
 }
 
-function keyPressed() {
-  if (key === "r" || key === "R") {
-    sim.reset();
-  }
-}
-
+// When the window size changes, rebuild the canvas and reset object positions.
 function windowResized() {
   const dims = getCanvasSize();
   resizeCanvas(dims.w, dims.h);
   sim.reset();
 }
 
+// Keep the canvas in a fixed 16:9 ratio regardless of browser size.
 function getCanvasSize() {
   let w = windowWidth;
   let h = windowHeight;
@@ -45,71 +41,82 @@ function getCanvasSize() {
   return { w: floor(w), h: floor(h) };
 }
 
+// Controls the whole minimal demo: one falling water particle and one resting particle.
 class SingleParticleBrewSim {
   constructor() {
-    this.gravity = createVector(0, 0.28);
+    // Main gravity strength. Increase to make both objects fall faster.
+    this.gravity = createVector(0, 0.1);
+
+    // Change only this value if you want the floor line itself to move up or down.
+    this.floorYRatio = 0.84;
+
+    // Change only this value if you want the coffee particle to start higher or lower.
+    // This is independent from the floor line position.
+    this.coffeeStartOffset = 22;
+
+    // Change only this value if you want the falling particle to start higher or lower.
+    this.waterStartOffset = 42;
+
     this.reset();
   }
 
+  // Defines the simple vertical chamber where the particles are simulated.
   get chamber() {
-    const w = min(width * 0.34, 320);
-    const h = min(height * 0.72, 520);
+    const w = min(width * 0.4, 360); // Change chamber width here.
+    const topY = height * 0.12; // Top offset of the chamber.
+    const floorY = height * this.floorYRatio; // Floor line position.
+    const h = floorY - topY; // Chamber height is derived from top and floor.
     return {
       x: width * 0.5 - w * 0.5,
-      y: height * 0.12,
+      y: topY,
       w,
       h,
       cx: width * 0.5,
-      floorY: height * 0.12 + h
+      floorY
     };
   }
 
+  // Reset both objects to their starting positions.
   reset() {
     const chamber = this.chamber;
-    this.elapsed = 0;
-    this.collisionHappened = false;
-    this.resetTimer = 0;
-    this.coffee = new CoffeeParticle(chamber.cx, chamber.floorY - 22, 44);
-    this.water = new WaterParticle(chamber.cx, chamber.y + 42, 12);
+    const coffeeStartY = chamber.floorY - this.coffeeStartOffset;
+    const waterStartY = chamber.y + this.waterStartOffset;
+
+    this.coffee = new CoffeeParticle(
+      chamber.cx,
+      coffeeStartY, // Coffee start height. Change coffeeStartOffset above to adjust only this.
+      44 // Resting object diameter.
+    );
+    this.water = new WaterParticle(
+      chamber.cx,
+      waterStartY, // Water start height. Change waterStartOffset above to adjust only this.
+      12 // Falling object diameter.
+    );
   }
 
+  // Apply forces, advance both particles, resolve collision, then clamp to bounds.
   update() {
     const dt = min(deltaTime / 1000, 1 / 30);
     const chamber = this.chamber;
 
-    this.elapsed += dt;
-
     this.water.applyForce(p5.Vector.mult(this.gravity, this.water.mass));
     this.coffee.applyForce(p5.Vector.mult(this.gravity, this.coffee.mass));
 
-    this.water.applyForce(p5.Vector.mult(this.water.vel, -0.012));
-    this.coffee.applyForce(p5.Vector.mult(this.coffee.vel, -0.085));
+    // Velocity damping. More negative means stronger air resistance / drag.
+    this.water.applyForce(p5.Vector.mult(this.water.vel, -0.012)); // Falling object drag.
+    this.coffee.applyForce(p5.Vector.mult(this.coffee.vel, -0.085)); // Resting object drag.
 
     this.water.update(dt);
     this.coffee.update(dt);
 
-    this.resolvePair(this.water, this.coffee, 0.36);
+    this.resolvePair(this.water, this.coffee, 0.36); // Collision bounciness (restitution).
 
     this.water.keepInsideChamber(chamber);
     this.coffee.keepInsideChamber(chamber);
     this.coffee.applyGroundFriction(chamber.floorY);
-
-    if (this.collisionHappened) {
-      this.resetTimer += dt;
-    }
-
-    const waterSettled =
-      this.water.pos.y >= chamber.floorY - this.water.radius - 0.5 &&
-      abs(this.water.vel.y) < 0.08;
-    const coffeeSettled =
-      this.coffee.pos.y >= chamber.floorY - this.coffee.radius - 0.5 &&
-      this.coffee.vel.mag() < 0.05;
-
-    if ((this.resetTimer > 1.6 && waterSettled && coffeeSettled) || this.elapsed > 8) {
-      this.reset();
-    }
   }
 
+  // Resolves overlap and applies a 1D collision impulse along the contact normal.
   resolvePair(a, b, restitution) {
     const delta = p5.Vector.sub(b.pos, a.pos);
     const distanceSq = delta.magSq();
@@ -136,100 +143,41 @@ class SingleParticleBrewSim {
     const impulse = p5.Vector.mult(normal, impulseMagnitude);
     a.vel.sub(p5.Vector.div(impulse, a.mass));
     b.vel.add(p5.Vector.div(impulse, b.mass));
-
-    this.collisionHappened = true;
-    this.coffee.lastImpactFrame = frameCount;
   }
 
+  // Draw only the floor line and the two particles.
   render() {
     const chamber = this.chamber;
-
-    this.renderBackdrop(chamber);
-    this.renderGuides(chamber);
+    this.renderBounds(chamber);
     this.water.render();
     this.coffee.render();
-    this.renderLabels(chamber);
   }
 
-  renderBackdrop(chamber) {
-    noStroke();
-    fill(24, 18, 14);
-    rect(0, 0, width, height);
-
-    fill(20, 16, 12);
-    rect(chamber.x - 36, chamber.y - 24, chamber.w + 72, chamber.h + 48, 22);
-
-    fill(12, 10, 8);
-    rect(chamber.x, chamber.y, chamber.w, chamber.h, 18);
-  }
-
-  renderGuides(chamber) {
-    stroke(255, 235, 210, 80);
-    strokeWeight(2);
-    line(chamber.x, chamber.y, chamber.x, chamber.floorY);
-    line(chamber.x + chamber.w, chamber.y, chamber.x + chamber.w, chamber.floorY);
+  // Visual reference for the floor that the particles collide with.
+  renderBounds(chamber) {
+    stroke(0); // #000000
+    strokeWeight(2); // Floor line thickness.
     line(chamber.x, chamber.floorY, chamber.x + chamber.w, chamber.floorY);
-
-    stroke(120, 190, 255, 60);
-    line(chamber.cx, chamber.y + 6, chamber.cx, chamber.floorY - 8);
-  }
-
-  renderLabels(chamber) {
-    noStroke();
-    fill(240, 224, 202);
-    textSize(26);
-    textAlign(CENTER, TOP);
-    text("One Coffee Particle + One Water Particle", width * 0.5, height * 0.05);
-
-    textSize(14);
-    fill(210, 195, 178);
-    text("click or press R to reset", width * 0.5, height * 0.095);
-
-    textAlign(LEFT, TOP);
-    textSize(15);
-
-    const infoX = chamber.x + chamber.w + 36;
-    const infoY = chamber.y + 26;
-    const waterSpeed = this.water.vel.mag().toFixed(2);
-    const coffeeSpeed = this.coffee.vel.mag().toFixed(2);
-
-    fill(145, 210, 255);
-    text("Water particle", infoX, infoY);
-    fill(228, 216, 198);
-    text(`position: (${this.water.pos.x.toFixed(1)}, ${this.water.pos.y.toFixed(1)})`, infoX, infoY + 24);
-    text(`velocity: ${waterSpeed}`, infoX, infoY + 46);
-
-    fill(148, 94, 52);
-    text("Coffee particle", infoX, infoY + 96);
-    fill(228, 216, 198);
-    text(`position: (${this.coffee.pos.x.toFixed(1)}, ${this.coffee.pos.y.toFixed(1)})`, infoX, infoY + 120);
-    text(`velocity: ${coffeeSpeed}`, infoX, infoY + 142);
-
-    fill(228, 216, 198, 180);
-    text(
-      this.collisionHappened
-        ? "collision: water transfers momentum to the resting coffee particle"
-        : "collision: waiting for the falling water particle to arrive",
-      chamber.x - 8,
-      chamber.floorY + 26
-    );
   }
 }
 
+// Shared base particle: position, velocity, acceleration, mass, and color.
 class Particle {
   constructor(x, y, radius, colorValue) {
     this.pos = createVector(x, y);
     this.vel = createVector(0, 0);
     this.acc = createVector(0, 0);
     this.radius = radius;
-    this.mass = radius * radius * 0.018;
+    this.mass = radius * radius * 0.018; // Default mass formula.
     this.colorValue = colorValue;
   }
 
+  // Convert a force into acceleration using F = m * a.
   applyForce(force) {
     this.acc.add(p5.Vector.div(force, this.mass));
   }
 
+  // Integrate acceleration into velocity and velocity into position.
   update(dt) {
     this.vel.add(p5.Vector.mult(this.acc, dt * 60));
     this.pos.add(p5.Vector.mult(this.vel, dt * 60));
@@ -237,98 +185,87 @@ class Particle {
   }
 }
 
+// The lower object that starts at rest and gets hit by the falling particle.
 class CoffeeParticle extends Particle {
   constructor(x, y, diameter) {
-    super(x, y, diameter * 0.5, color(84, 46, 24));
-    this.mass = this.radius * this.radius * 0.028;
-    this.lastImpactFrame = -999;
+    super(x, y, diameter * 0.5, color(84, 46, 24)); // #542E18
+    this.mass = this.radius * this.radius * 0.028; // Heavier mass multiplier.
   }
 
+  // Prevent the resting particle from leaving the chamber horizontally or below the floor.
   keepInsideChamber(chamber) {
     if (this.pos.x < chamber.x + this.radius) {
       this.pos.x = chamber.x + this.radius;
-      this.vel.x *= -0.2;
+      this.vel.x *= -0.2; // Side wall bounce for the resting particle.
     }
     if (this.pos.x > chamber.x + chamber.w - this.radius) {
       this.pos.x = chamber.x + chamber.w - this.radius;
-      this.vel.x *= -0.2;
+      this.vel.x *= -0.2; // Side wall bounce for the resting particle.
     }
     if (this.pos.y > chamber.floorY - this.radius) {
       this.pos.y = chamber.floorY - this.radius;
-      this.vel.y *= -0.16;
+      this.vel.y *= -0.16; // Floor bounce for the resting particle.
     }
   }
 
+  // Extra floor friction so the resting particle eventually stops sliding.
   applyGroundFriction(floorY) {
     const onFloor = this.pos.y >= floorY - this.radius - 0.5;
     if (!onFloor) {
       return;
     }
-    this.vel.x *= 0.92;
+    this.vel.x *= 0.92; // Horizontal floor friction.
     if (abs(this.vel.x) < 0.01) {
-      this.vel.x = 0;
+      this.vel.x = 0; // Horizontal stop threshold.
     }
     if (abs(this.vel.y) < 0.02) {
-      this.vel.y = 0;
+      this.vel.y = 0; // Vertical stop threshold.
     }
   }
 
+  // Draw the resting particle as a simple solid circle.
   render() {
-    const glow = constrain(map(frameCount - this.lastImpactFrame, 0, 14, 90, 0), 0, 90);
-
     noStroke();
-    fill(35, 20, 10, 90);
-    ellipse(this.pos.x, this.pos.y + this.radius * 0.92, this.radius * 1.9, this.radius * 0.55);
-
     fill(this.colorValue);
     ellipse(this.pos.x, this.pos.y, this.radius * 2);
-
-    fill(140, 102, 70, 95);
-    ellipse(this.pos.x - this.radius * 0.18, this.pos.y - this.radius * 0.24, this.radius * 0.9);
-
-    fill(255, 232, 210, glow);
-    ellipse(this.pos.x, this.pos.y, this.radius * 2.2);
   }
 }
 
+// The upper object that falls first and transfers momentum during collision.
 class WaterParticle extends Particle {
   constructor(x, y, diameter) {
-    super(x, y, diameter * 0.5, color(188, 228, 255, 210));
-    this.mass = this.radius * this.radius * 0.011;
+    super(x, y, diameter * 0.5, color(0, 47, 255, 210)); // #002fff, alpha 210
+    this.mass = this.radius * this.radius * 0.02; // Mass multiplier for the falling particle.
   }
 
+  // Keep the falling particle inside the chamber and bounce it off walls/floor.
   keepInsideChamber(chamber) {
     if (this.pos.x < chamber.x + this.radius) {
       this.pos.x = chamber.x + this.radius;
-      this.vel.x *= -0.75;
+      this.vel.x *= -0.75; // Side wall bounce for the falling particle.
     }
     if (this.pos.x > chamber.x + chamber.w - this.radius) {
       this.pos.x = chamber.x + chamber.w - this.radius;
-      this.vel.x *= -0.75;
+      this.vel.x *= -0.75; // Side wall bounce for the falling particle.
     }
     if (this.pos.y < chamber.y + this.radius) {
       this.pos.y = chamber.y + this.radius;
-      this.vel.y *= -0.45;
+      this.vel.y *= -0.45; // Ceiling bounce.
     }
     if (this.pos.y > chamber.floorY - this.radius) {
       this.pos.y = chamber.floorY - this.radius;
-      this.vel.y *= -0.28;
-      this.vel.x *= 0.98;
+      this.vel.y *= -0.28; // Floor bounce for the falling particle.
+      this.vel.x *= 0.98; // Small floor friction after landing.
       if (abs(this.vel.y) < 0.02) {
-        this.vel.y = 0;
+        this.vel.y = 0; // Vertical stop threshold.
       }
     }
   }
 
+  // Draw the falling particle as a simple solid circle.
   render() {
     noStroke();
-    fill(130, 200, 255, 44);
-    ellipse(this.pos.x, this.pos.y, this.radius * 4.1);
-
     fill(this.colorValue);
     ellipse(this.pos.x, this.pos.y, this.radius * 2);
-
-    fill(255, 255, 255, 90);
-    ellipse(this.pos.x - this.radius * 0.2, this.pos.y - this.radius * 0.24, this.radius * 0.75);
   }
 }
